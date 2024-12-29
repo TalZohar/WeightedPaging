@@ -1,11 +1,18 @@
 import copy
 import dataclasses
+import os
+import shutil
 import uuid
 from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+from random import randint
 from typing import List
 
 from matplotlib import pyplot as plt
 from networkx.algorithms.traversal import dfs_edges
+
+from check_monotonicity import check_monotonicity, check_monotonicity_differ_by_one
 
 
 @dataclasses.dataclass
@@ -61,7 +68,7 @@ class IntervalProblem:
         return min(range(self.time_horizon), key=lambda t: len(self.find_weightless_intervals(t)))
 
 
-def translate_paging_to_interval_problem(requests, page_weights, k, start_cache_state) -> IntervalProblem:
+def translate_paging_to_interval_problem(requests, page_weights, k) -> IntervalProblem:
     """
     Translate paging to intervals.
     Note, an interval begins a timestep after a request and ends a timestep before
@@ -109,10 +116,9 @@ def translate_interval_solution_to_paging_solution(interval_prob: IntervalProble
     return cache_states
 
 
-def solve_local_ratio(interval_prob: IntervalProblem, recursion_depth: int) -> List[Interval]:
+def solve_local_ratio(interval_prob: IntervalProblem, recursion_depth: int, output_dir: Path) -> List[Interval]:
     new_interval_prob = copy.deepcopy(interval_prob)
     tau = new_interval_prob.find_tau()
-    plot_intervals_by_page(interval_prob.interval_list, save_file=f"[{recursion_depth}]tau{tau}.png")
     print(f"tau: {tau}")
 
     if len(interval_prob.find_weightless_intervals(tau)) >= interval_prob.width:
@@ -126,7 +132,12 @@ def solve_local_ratio(interval_prob: IntervalProblem, recursion_depth: int) -> L
 
     # find Q-intervals
     q_intervals = [interval for interval in tau_intervals if interval.weight == 0]
-    returned_sol = solve_local_ratio(new_interval_prob, recursion_depth + 1)
+    returned_sol = solve_local_ratio(new_interval_prob, recursion_depth + 1, output_dir)
+
+    if output_dir:
+        sol_uuids = {interval.id for interval in returned_sol}
+        path = output_dir / f"[{recursion_depth}]tau{tau}.png"
+        plot_intervals_by_page(interval_prob.interval_list, sol_uuids, save_file=path)
 
     # Add q-intervals to solution as long as it is necessary
     for interval in q_intervals:
@@ -166,7 +177,8 @@ def plot_intervals_by_page(intervals: List[Interval], highlight_ids=None, save_f
                 color = 'skyblue'  # Regular color
 
             # Plot the interval as a horizontal bar
-            ax.broken_barh([(interval.start_time, interval.length)], (y_level - 0.4, 0.8), facecolors=color)
+            ax.broken_barh([(interval.start_time - 0.03, interval.length + 0.06)], (y_level - 0.4, 0.8),
+                           facecolors=color)
 
             # Annotate the interval with its weight
             ax.text((interval.start_time + interval.end_time) / 2, y_level,
@@ -188,16 +200,40 @@ def plot_intervals_by_page(intervals: List[Interval], highlight_ids=None, save_f
     plt.close()
 
 
+def solve_paging_local_ratio(requests, page_weights, k, plot_solution=False, output_dir: Path = None):
+    """
+    :return: list of cache states
+    """
+    interval_problem = translate_paging_to_interval_problem(requests, page_weights, k)
+    sol = solve_local_ratio(interval_problem, 0, output_dir)
+    if plot_solution:
+        sol_uuids = {interval.id for interval in sol}
+        plot_intervals_by_page(interval_problem.interval_list, sol_uuids, output_dir/f"solution")
+    return translate_interval_solution_to_paging_solution(interval_problem, sol, requests)
+
+
 def main():
-    requests = [4, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 4]
-    page_weights = [3, 2, 3, 3, 3]
-    start_cache = [0, 2, 3, 4]
-    k = 4
-    interval_problem = translate_paging_to_interval_problem(requests, page_weights, k, start_cache)
-    sol = solve_local_ratio(interval_problem, 0)
-    print(translate_interval_solution_to_paging_solution(interval_problem, sol, requests))
-    sol_uuids = {interval.id for interval in sol}
-    plot_intervals_by_page(interval_problem.interval_list, sol_uuids)
+    page_weights = [1, 3, 3, 4, 5]
+    k = 2
+    while True:
+        requests = [randint(0, len(page_weights) - 1) for i in range(10)]
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        base_dir = Path("outputs") / Path(current_time)
+        output_dir = base_dir / "k"
+        output_dir.mkdir(parents=True)
+        k1_cache_states = solve_paging_local_ratio(requests, page_weights, k, plot_solution=True, output_dir=output_dir)
+        output_dir = base_dir / "k+1"
+        output_dir.mkdir(parents=True)
+        k2_cache_states = solve_paging_local_ratio(requests, page_weights, k + 1, plot_solution=True, output_dir=output_dir)
+        with open(base_dir / 'info.txt', 'a') as file:
+            file.write(f"k1 cache states: {k1_cache_states}\n")
+            file.write(f"k2 cache states: {k2_cache_states}\n")
+            file.write(f"requests: {requests}")
+
+        if check_monotonicity_differ_by_one(requests, k2_cache_states, k1_cache_states):
+            shutil.rmtree(base_dir)
+
+
 
 
 if __name__ == '__main__':
